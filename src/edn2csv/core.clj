@@ -63,8 +63,11 @@
       )))
 
 (defn edn->csv-reducers [edn-file csv-file]
-  (with-open [out-file (io/writer csv-file)]
+  (with-open [out-file (io/writer csv-file)
+              parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))]
     (safe-println out-file individuals-header-line)
+
+    ; reducer for individuals.csv
     (->>
       (iota/seq edn-file)
       (r/map (partial edn/read-string {:default individual-reader}))
@@ -75,8 +78,13 @@
       ; totally kills the parallelism. :-(
       (r/filter identity)
       (r/map (partial print-individual-to-csv out-file))
-      (r/fold +)
-      )))
+      (r/fold +))
+
+    ; reducer for ParentOf-edges.csv
+    ;(->>
+    ;    (iota/seq edn-file)
+    ;    )
+    ))
 
 (defn build-individual-csv-filename
   [edn-filename strategy]
@@ -85,8 +93,15 @@
        (fs/base-name edn-filename ".edn")
        (if strategy
          (str "_" strategy)
-         "_sequential")
+         "_reducers")
        "_Individuals.csv"))
+
+(defn build-parent-edges-csv-filename
+    [edn-filename]
+    (str (fs/parent edn-filename)
+    "/"
+    (fs/base-name edn-filename ".edn")
+    "_ParentOf_edges.csv"))
 
 (defn -main
   [edn-filename & [strategy]]
@@ -96,7 +111,7 @@
         "sequential" (edn->csv-sequential edn-filename individual-csv-file)
         "pmap" (edn->csv-pmap edn-filename individual-csv-file)
         "reducers" (edn->csv-reducers edn-filename individual-csv-file)
-        (edn->csv-sequential edn-filename individual-csv-file))))
+        (edn->csv-reducers edn-filename individual-csv-file))))
   ; Necessary to get threads spun up by `pmap` to shutdown so you get
   ; your prompt back right away when using `lein run`.
   (shutdown-agents))
