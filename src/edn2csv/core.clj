@@ -3,12 +3,14 @@
            [clojure.edn :as edn]
            [clojure.java.io :as io]
            [clojure.pprint :as pp]
+           [clojure.set :as set]
            [iota]
            [me.raynes.fs :as fs])
   (:gen-class))
 
 ; The header line for the Individuals CSV file
 (def individuals-header-line "UUID:ID(Individual),Generation:int,Location:int,:LABEL")
+(def parent-edges-header ":START_ID(Individual),GeneticOperator,:END_ID(Individual),:TYPE")
 
 ; Ignores (i.e., returns nil) any EDN entries that don't have the
 ; 'clojure/individual tag.
@@ -37,51 +39,59 @@
     (apply safe-println csv-file $))
   1)
 
-(defn edn->csv-sequential [edn-file csv-file]
-  (with-open [out-file (io/writer csv-file)]
-    (safe-println out-file individuals-header-line)
-    (->>
-      (line-seq (io/reader edn-file))
-      ; Skip the first line because it's not an individual
-      (drop 1)
-      (map (partial edn/read-string {:default individual-reader}))
-      (map (partial print-individual-to-csv out-file))
-      (reduce +)
-      )))
+(defn build-parent-edges-csv-filename
+  [edn-filename]
+  (str (fs/parent edn-filename)
+  "/"
+  (fs/base-name edn-filename ".edn")
+  "_ParentOf_edges.csv"))
 
-(defn edn->csv-pmap [edn-file csv-file]
-  (with-open [out-file (io/writer csv-file)]
-    (safe-println out-file individuals-header-line)
-    (->>
-      (line-seq (io/reader edn-file))
-      ; Skip the first line because it's not an individual
-      (drop 1)
-      (pmap (fn [line]
-        (print-individual-to-csv out-file (edn/read-string {:default individual-reader} line))
-        1))
-      count
-      )))
+(defn print-single-parent-edge [out-file parent]
+    (safe-println out-file parent)
+    )
+
+(defn print-parent-edges [out-file edn-line]
+    (map (partial print-single-parent-edge out-file) (map edn-line [:parent-uuids])))
+
+;Takes an atom and an edn line
+;unions the line into the atom' value and returns the line as a string
+(defn read-and-set [indiv edn-line]
+    (do
+        (as-> edn-line $
+            (edn/read-string {:default individual-reader} $)
+            (swap! indiv (set/union @indiv #{$})))
+        (edn/read-string {:default individual-reader} edn-line)))
 
 (defn edn->csv-reducers [edn-file csv-file]
   (with-open [out-file (io/writer csv-file)
-              parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))]
+              parent-edges-file (io/writer (build-parent-edges-csv-filename    edn-file))]
     (safe-println out-file individuals-header-line)
+    (safe-println parent-edges-file parent-edges-header)
 
-    ; reducer for individuals.csv
+    (def indiv (atom {}))
+
     (->>
       (iota/seq edn-file)
-      (r/map (partial edn/read-string {:default individual-reader}))
+      (r/map (partial read-and-set indiv))
       ; This eliminates empty (nil) lines, which result whenever
       ; a line isn't a 'clojush/individual. That only happens on
       ; the first line, which is a 'clojush/run, but we still need
       ; to catch it. We could do that with `r/drop`, but that
       ; totally kills the parallelism. :-(
       (r/filter identity)
+        ;individuals-set
       (r/map (partial print-individual-to-csv out-file))
       (r/fold +))
 
+    (r/map (partial print-parent-edges parent-edges-file) @indiv)
+
     ; reducer for ParentOf-edges.csv
-    ;(->>
+    ;(->>(defn build-parent-edges-csv-filename
+  ; [edn-filename]
+  ; (str (fs/parent edn-filename)
+  ; "/"
+  ; (fs/base-name edn-filename ".edn")
+  ; "_ParentOf_edges.csv"))
     ;    (iota/seq edn-file)
     ;    )
     ))
@@ -96,21 +106,12 @@
          "_reducers")
        "_Individuals.csv"))
 
-(defn build-parent-edges-csv-filename
-    [edn-filename]
-    (str (fs/parent edn-filename)
-    "/"
-    (fs/base-name edn-filename ".edn")
-    "_ParentOf_edges.csv"))
 
 (defn -main
   [edn-filename & [strategy]]
   (let [individual-csv-file (build-individual-csv-filename edn-filename strategy)]
     (time
       (condp = strategy
-        "sequential" (edn->csv-sequential edn-filename individual-csv-file)
-        "pmap" (edn->csv-pmap edn-filename individual-csv-file)
-        "reducers" (edn->csv-reducers edn-filename individual-csv-file)
         (edn->csv-reducers edn-filename individual-csv-file))))
   ; Necessary to get threads spun up by `pmap` to shutdown so you get
   ; your prompt back right away when using `lein run`.
