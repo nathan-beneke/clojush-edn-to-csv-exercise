@@ -13,7 +13,7 @@
 (def parent-edges-header ":START_ID(Individual),GeneticOperator,:END_ID(Individual),:TYPE")
 
 ; Ignores (i.e., returns nil) any EDN entries that don't have the
-; 'clojure/individual tag.
+; 'clojure/individual tag.csv-
 (defn individual-reader
     [t v]
     (when (= t 'clojush/individual) v))
@@ -46,25 +46,30 @@
   (fs/base-name edn-filename ".edn")
   "_ParentOf_edges.csv"))
 
-(defn print-single-parent-edge [out-file parent]
-    (safe-println out-file parent)
-    )
+(defn print-single-parent-edge [out-file child parent]
+    (apply safe-println out-file (concat [parent] child)))
 
+; prints all the parent edges for this individual to the out-file
 (defn print-parent-edges [out-file edn-line]
-    (map (partial print-single-parent-edge out-file) (map edn-line [:parent-uuids])))
+    (as-> edn-line $
+      (map $ [:genetic-operators :uuid])
+      (concat $ ["PARENT_OF"])
+      (doall (map (partial print-single-parent-edge out-file $)
+                  (edn-line :parent-uuids)))))
 
-;Takes an atom and an edn line
-;unions the line into the atom' value and returns the line as a string
-(defn read-and-set [indiv edn-line]
+; Takes an atom, files to write to, and an edn object thing
+; Writes the appropriate data to the appropriate files
+; Returns 1
+(defn read-and-write [indiv out-file parent-edges-csv edn-line]
     (do
-        (as-> edn-line $
-            (edn/read-string {:default individual-reader} $)
-            (swap! indiv (set/union @indiv #{$})))
-        (edn/read-string {:default individual-reader} edn-line)))
+      (swap! indiv (set/union @indiv #{edn-line}))
+      (print-individual-to-csv out-file edn-line)
+      (print-parent-edges parent-edges-csv edn-line)
+      1))
 
 (defn edn->csv-reducers [edn-file csv-file]
   (with-open [out-file (io/writer csv-file)
-              parent-edges-file (io/writer (build-parent-edges-csv-filename    edn-file))]
+              parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))]
     (safe-println out-file individuals-header-line)
     (safe-println parent-edges-file parent-edges-header)
 
@@ -72,7 +77,7 @@
 
     (->>
       (iota/seq edn-file)
-      (r/map (partial read-and-set indiv))
+      (r/map (partial edn/read-string {:default individual-reader}))
       ; This eliminates empty (nil) lines, which result whenever
       ; a line isn't a 'clojush/individual. That only happens on
       ; the first line, which is a 'clojush/run, but we still need
@@ -80,10 +85,10 @@
       ; totally kills the parallelism. :-(
       (r/filter identity)
         ;individuals-set
-      (r/map (partial print-individual-to-csv out-file))
+      (r/map (partial read-and-write indiv out-file parent-edges-file))
       (r/fold +))
 
-    (r/map (partial print-parent-edges parent-edges-file) @indiv)
+    ;(r/map (partial print-parent-edges parent-edges-file) @indiv)
 
     ; reducer for ParentOf-edges.csv
     ;(->>(defn build-parent-edges-csv-filename
