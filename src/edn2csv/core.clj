@@ -8,9 +8,12 @@
            [me.raynes.fs :as fs])
   (:gen-class))
 
+(defn uuid [] (str (java.util.UUID/randomUUID)))
+
 ; The header line for the Individuals CSV file
 (def individuals-header-line "UUID:ID(Individual),Generation:int,Location:int,:LABEL")
 (def parent-edges-header ":START_ID(Individual),GeneticOperator,:END_ID(Individual),:TYPE")
+(def semantics-header ":UUID:ID(Semantics),TotalError:int,:LABEL")
 
 ; Ignores (i.e., returns nil) any EDN entries that don't have the
 ; 'clojure/individual tag.csv-
@@ -46,6 +49,13 @@
   (fs/base-name edn-filename ".edn")
   "_ParentOf_edges.csv"))
 
+  (defn build-semantics-file-csv
+    [edn-filename]
+    (str (fs/parent edn-filename)
+    "/"
+    (fs/base-name edn-filename ".edn")
+    "_Semantics.csv"))
+
 (defn print-single-parent-edge [out-file child parent]
     (apply safe-println out-file (concat [parent] child)))
 
@@ -60,20 +70,26 @@
 ; Takes an atom, files to write to, and an edn object thing
 ; Writes the appropriate data to the appropriate files
 ; Returns 1
-(defn read-and-write [indiv out-file parent-edges-csv edn-line]
+(defn read-and-write [total-errors out-file parent-edges-csv edn-line]
     (do
-      (swap! indiv (set/union @indiv #{edn-line}))
+      (swap! total-errors (set/union @total-errors #{(edn-line :total-error)}))
       (print-individual-to-csv out-file edn-line)
       (print-parent-edges parent-edges-csv edn-line)
       1))
 
+(defn print-semantics [semantics-file total-error]
+  (safe-println semantics-file
+    (uuid) total-error "Semantics"))
+
 (defn edn->csv-reducers [edn-file csv-file]
   (with-open [out-file (io/writer csv-file)
-              parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))]
+              parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))
+              semantics-file (io/writer (build-semantics-file-csv edn-file))]
     (safe-println out-file individuals-header-line)
     (safe-println parent-edges-file parent-edges-header)
+    (safe-println semantics-file semantics-header)
 
-    (def indiv (atom {}))
+    (def total-errors (atom {}))
 
     (->>
       (iota/seq edn-file)
@@ -85,10 +101,13 @@
       ; totally kills the parallelism. :-(
       (r/filter identity)
         ;individuals-set
-      (r/map (partial read-and-write indiv out-file parent-edges-file))
+      (r/map (partial read-and-write total-errors out-file parent-edges-file))
       (r/fold +))
 
-    ;(r/map (partial print-parent-edges parent-edges-file) @indiv)
+    ;(doall
+    ;    (into [] (r/map (partial print-semantics semantics-file) @total-errors)))
+
+    (prn @total-errors)
 
     ; reducer for ParentOf-edges.csv
     ;(->>(defn build-parent-edges-csv-filename
