@@ -16,6 +16,7 @@
 (def semantics-header ":UUID:ID(Semantics),TotalError:int,:LABEL")
 (def individual-semantics-header ":START_ID(Individual),:END_ID(Semantics),:TYPE")
 (def error-header "UUID:ID(Error),ErrorValue:int,Position:int,:Label")
+(def error-edge-header "START_ID(Semantics),:END_ID(Error),:TYPE")
 
 ; Ignores (i.e., returns nil) any EDN entries that don't have the
 ; 'clojure/individual tag.csv-
@@ -72,6 +73,13 @@
       (fs/base-name edn-filename ".edn")
       "_Errors.csv"))
 
+      (defn build-error-edge-file
+        [edn-filename]
+        (str (fs/parent edn-filename)
+        "/"
+        (fs/base-name edn-filename ".edn")
+        "Semantics_Error_edges.csv"))
+
 (defn print-single-parent-edge [out-file child parent]
     (apply safe-println out-file (concat [parent] child)))
 
@@ -89,16 +97,18 @@
     (@total-errors [(edn-line :total-error) (edn-line :errors)])
     "HAS_SEMANTICS"))
 
-(defn print-error-out [out-file error pos]
-  (do
+(defn print-error-out [error-file error-edge-file semantic-uuid error pos]
+  (let [error-uuid (uuid)]
     ;(prn "I was called!")
-    (safe-println out-file (uuid) error pos "Error")))
+    (safe-println error-edge-file semantic-uuid error-uuid "HAS_ERROR")
+    (safe-println error-file error-uuid error pos "Error")))
 
-(defn print-error-vector [out-file error-vector]
+(defn print-error-vector [error-file error-edge-file error-vector semantic-uuid]
     (if (nil? error-vector)
       (prn "error vector was nil")
       (doall
-        (map (partial print-error-out out-file) error-vector (iterate inc 0)))))
+        (pmap (partial print-error-out error-file error-edge-file semantic-uuid)
+             error-vector (iterate inc 0)))))
 
 (defn update-semantics [old-set new-error]
   (if (contains? old-set new-error)
@@ -120,22 +130,24 @@
   (safe-println semantics-file
     (val semantic) (first (key semantic)) "Semantics"))
 
-(defn print-semantics-and-error [semantics-file errors-file semantic]
+(defn print-semantics-and-error [semantics-file errors-file error-edge-file semantic]
   (do
     (print-semantics semantics-file semantic)
-    (print-error-vector errors-file (second (key semantic)))))
+    (print-error-vector errors-file error-edge-file (second (key semantic)) (val semantic))))
 
 (defn edn->csv-reducers [edn-file csv-file]
   (with-open [out-file (io/writer csv-file)
               parent-edges-file (io/writer (build-parent-edges-csv-filename edn-file))
               semantics-file (io/writer (build-semantics-file-csv edn-file))
               semantics-edge-file (io/writer (build-semantics-edge-file edn-file))
-              errors-file (io/writer (build-errors-file edn-file))]
+              errors-file (io/writer (build-errors-file edn-file))
+              error-edge-file (io/writer (build-error-edge-file edn-file))]
     (safe-println out-file individuals-header-line)
     (safe-println parent-edges-file parent-edges-header)
     (safe-println semantics-file semantics-header)
     (safe-println semantics-edge-file individual-semantics-header)
     (safe-println errors-file error-header)
+    (safe-println error-edge-file error-edge-header)
 
     (def total-errors (atom (hash-map)))
 
@@ -153,7 +165,7 @@
       (r/fold +))
 
     (doall
-        (into [] (r/map (partial print-semantics-and-error semantics-file errors-file) @total-errors)))
+        (pmap (partial print-semantics-and-error semantics-file errors-file error-edge-file) @total-errors))
 
       ;(prn @total-errors)
 
